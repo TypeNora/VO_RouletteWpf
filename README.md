@@ -22,7 +22,6 @@
 前提:
 - Visual Studio 2022
 - .NET 8 SDK
-- Edge WebView2 Runtime
 
 手順:
 1. `VO_roulette_wpf/VO_roulette_wpf.sln` を Visual Studio で開く
