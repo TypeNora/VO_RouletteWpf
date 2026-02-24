@@ -38,6 +38,21 @@
    - `VO_roulette_wpf/artifacts/publish/win-x64`
    - `VO_roulette_wpf/artifacts/publish/win-x64-self-contained`
 
+## 実行ファイルをGitHubで管理する
+
+配布用ファイルは次のディレクトリに集約してコミットします。
+
+- `VO_roulette_wpf/artifacts/releases/win-x64`
+
+CLI例:
+
+```bash
+dotnet publish VO_roulette_wpf/src/VoRoulette.Wpf/VoRoulette.Wpf.csproj -c Release -r win-x64 --self-contained false -o VO_roulette_wpf/artifacts/releases/win-x64
+git -C VO_roulette_wpf add artifacts/releases/win-x64
+git -C VO_roulette_wpf commit -m "chore: add win-x64 executable"
+git -C VO_roulette_wpf push
+```
+
 ## 実装済み（純WPF）
 
 1. キャラのON/OFF・名称・重み編集

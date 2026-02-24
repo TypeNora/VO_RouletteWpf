@@ -1,3 +1,8 @@
 .vs/
 **/bin/
 **/obj/
+
+# Keep distributable binaries under version control.
+!artifacts/
+!artifacts/releases/
+!artifacts/releases/**
