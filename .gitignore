@@ -2,7 +2,8 @@
 **/bin/
 **/obj/
 
-# Keep distributable binaries under version control.
+# Track release zip only.
 !artifacts/
+artifacts/releases/**
 !artifacts/releases/
-!artifacts/releases/**
+!artifacts/releases/*.zip

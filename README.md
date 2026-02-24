@@ -40,18 +40,24 @@
 
 ## 実行ファイルをGitHubで管理する
 
-配布用ファイルは次のディレクトリに集約してコミットします。
+配布用は `exe + assets` を1つのzipにして管理します。
+生成物:
 
-- `VO_roulette_wpf/artifacts/releases/win-x64`
+- `VO_roulette_wpf/artifacts/releases/VO_RouletteWpf-win-x64.zip`
 
-CLI例:
+PowerShell:
 
 ```bash
-dotnet publish VO_roulette_wpf/src/VoRoulette.Wpf/VoRoulette.Wpf.csproj -c Release -r win-x64 --self-contained false -o VO_roulette_wpf/artifacts/releases/win-x64
-git -C VO_roulette_wpf add artifacts/releases/win-x64
-git -C VO_roulette_wpf commit -m "chore: add win-x64 executable"
+pwsh -File VO_roulette_wpf/scripts/package-win-x64.ps1
+git -C VO_roulette_wpf add artifacts/releases/VO_RouletteWpf-win-x64.zip
+git -C VO_roulette_wpf commit -m "chore: add win-x64 release zip"
 git -C VO_roulette_wpf push
 ```
+
+zipの中身:
+
+- `VoRoulette.Wpf.exe`（self-contained single-file）
+- `assets/`（そのまま同梱）
 
 ## 実装済み（純WPF）
 
