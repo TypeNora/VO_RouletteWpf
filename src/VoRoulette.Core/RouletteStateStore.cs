@@ -35,15 +35,39 @@ public static class RouletteStateStore
 
     public static void Save(string appName, RouletteState state)
     {
-        var path = GetPath(appName);
-        var dir = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(dir))
+        string? tempPath = null;
+        try
         {
-            Directory.CreateDirectory(dir);
-        }
+            var path = GetPath(appName);
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
 
-        var json = JsonSerializer.Serialize(state, JsonOptions);
-        File.WriteAllText(path, json, ShiftJisEncoding);
+            var json = JsonSerializer.Serialize(state, JsonOptions);
+            tempPath = $"{path}.tmp";
+            File.WriteAllText(tempPath, json, ShiftJisEncoding);
+            File.Copy(tempPath, path, overwrite: true);
+            File.Delete(tempPath);
+        }
+        catch
+        {
+            // App should keep running even if state persistence fails.
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(tempPath) && File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch
+                {
+                }
+            }
+        }
     }
 
     private static string GetPath(string _appName)

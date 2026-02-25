@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private const string AppDataName = "VO_roulette_wpf";
     private const double ArcadeDefaultCellWidth = 243;
     private const double ArcadeDefaultCellHeight = 71;
+    private const int MaxBannerCacheEntries = 512;
 
     private readonly ObservableCollection<CharacterItem> _characters = [];
     private readonly List<RouletteEntry>[] _favorites = [[], [], []];
@@ -68,7 +69,6 @@ public partial class MainWindow : Window
 
         CharacterGrid.ItemsSource = _characters;
         RefreshPresetComboBoxItems();
-        WheelControl.PointerFlexEnabled = false;
 
         _arcadeTimer.Tick += ArcadeTimer_Tick;
         _arcadeBlinkTimer.Tick += ArcadeBlinkTimer_Tick;
@@ -166,7 +166,6 @@ public partial class MainWindow : Window
 
         _startAt = DateTime.UtcNow;
         _lastFrameAt = _startAt;
-        WheelControl.PointerFlexEnabled = true;
 
         StartButton.IsEnabled = false;
         StopButton.IsEnabled = true;
@@ -196,7 +195,6 @@ public partial class MainWindow : Window
     {
         _running = false;
         _decelRequested = false;
-        WheelControl.PointerFlexEnabled = false;
         WheelControl.RotationRadians = NormalizeAngle(WheelControl.RotationRadians + (_random.NextDouble() - 0.5) * (Math.PI / 90));
 
         var winner = WheelControl.PickCurrentName();
@@ -492,6 +490,12 @@ public partial class MainWindow : Window
         }
 
         var selected = dialog.FileName;
+        if (!IsSupportedImagePath(selected))
+        {
+            PresetStatusText.Text = "対応画像形式（png/gif/bmp/jpg/jpeg）のローカルファイルを選択してください。";
+            return;
+        }
+
         var normalized = NormalizeStoredImagePath(selected, baseDir);
         item.ImagePath = normalized;
         RebuildWheel();
@@ -1100,21 +1104,24 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(customPath))
         {
             var resolvedPath = ResolveCustomImagePath(customPath);
-            var customKey = $"CUSTOM|{resolvedPath}";
-            if (_bannerCache.TryGetValue(customKey, out var customCached))
+            if (IsSupportedImagePath(resolvedPath))
             {
-                if (customCached is not null)
+                var customKey = $"CUSTOM|{resolvedPath}";
+                if (_bannerCache.TryGetValue(customKey, out var customCached))
                 {
-                    return customCached;
+                    if (customCached is not null)
+                    {
+                        return customCached;
+                    }
                 }
-            }
-            else
-            {
-                var customImage = LoadImageIfExists(resolvedPath);
-                _bannerCache[customKey] = customImage;
-                if (customImage is not null)
+                else
                 {
-                    return customImage;
+                    var customImage = LoadImageIfExists(resolvedPath);
+                    SetBannerCache(customKey, customImage);
+                    if (customImage is not null)
+                    {
+                        return customImage;
+                    }
                 }
             }
         }
@@ -1136,11 +1143,11 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            _bannerCache[key] = bitmap;
+            SetBannerCache(key, bitmap);
             return bitmap;
         }
 
-        _bannerCache[key] = null;
+        SetBannerCache(key, null);
         return null;
     }
 
@@ -1173,6 +1180,11 @@ public partial class MainWindow : Window
 
     private static ImageSource? LoadImageIfExists(string path)
     {
+        if (!IsSupportedImagePath(path))
+        {
+            return null;
+        }
+
         if (!File.Exists(path))
         {
             return null;
@@ -1192,6 +1204,42 @@ public partial class MainWindow : Window
         {
             return null;
         }
+    }
+
+    private static bool IsSupportedImagePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (!Uri.TryCreate(fullPath, UriKind.Absolute, out var uri) || !uri.IsFile || uri.IsUnc)
+        {
+            return false;
+        }
+
+        var ext = Path.GetExtension(fullPath);
+        return BannerFileExtensions.Any(x => x.Equals(ext, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void SetBannerCache(string key, ImageSource? value)
+    {
+        if (!_bannerCache.ContainsKey(key) && _bannerCache.Count >= MaxBannerCacheEntries)
+        {
+            _bannerCache.Clear();
+        }
+
+        _bannerCache[key] = value;
     }
 
     private static string NormalizeAssetKey(string name)

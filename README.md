@@ -68,6 +68,15 @@ zipの中身:
 5. `AppData` 配下へのJSON保存
 6. `アーケード選択モード` タブ（左右バナー走査ランダム）
 
+## 作成サンプル画像
+
+以下は本アプリでの表示例を示す**作成サンプル画像**です（実機スクリーンショット）。
+
+- DNA表示サンプル  
+  ![作成サンプル画像: DNA表示](docs/images/voot-dna-sample.png)
+- RNA表示サンプル  
+  ![作成サンプル画像: RNA表示](docs/images/voot-rna-sample.png)
+
 ## アーケードバナー画像
 
 - 配置先: `src/VoRoulette.Wpf/assets/arcade-banners`
