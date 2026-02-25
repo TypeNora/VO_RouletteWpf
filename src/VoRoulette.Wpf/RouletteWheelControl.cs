@@ -11,6 +11,11 @@ namespace VoRoulette.Wpf;
 public sealed class RouletteWheelControl : FrameworkElement
 {
     private readonly List<WheelSegment> _segments = [];
+    private DateTime _lastPointerRenderAt = DateTime.MinValue;
+    private double _lastRotationRadians;
+    private double _smoothedAngularSpeed;
+    private double _pointerFlexX;
+    private double _pointerFlexVelocityX;
 
     public double RotationRadians
     {
@@ -21,6 +26,16 @@ public sealed class RouletteWheelControl : FrameworkElement
     public static readonly DependencyProperty RotationRadiansProperty =
         DependencyProperty.Register(nameof(RotationRadians), typeof(double), typeof(RouletteWheelControl),
             new FrameworkPropertyMetadata(0d, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public bool PointerFlexEnabled
+    {
+        get => (bool)GetValue(PointerFlexEnabledProperty);
+        set => SetValue(PointerFlexEnabledProperty, value);
+    }
+
+    public static readonly DependencyProperty PointerFlexEnabledProperty =
+        DependencyProperty.Register(nameof(PointerFlexEnabled), typeof(bool), typeof(RouletteWheelControl),
+            new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender));
 
     public void RebuildSegments(IEnumerable<RouletteEntry> entries)
     {
@@ -89,13 +104,95 @@ public sealed class RouletteWheelControl : FrameworkElement
         dc.Pop();
 
         dc.DrawEllipse(Brushes.White, new Pen(Brushes.Black, 2), center, radius * 0.1, radius * 0.1);
+        UpdatePointerDynamics();
+        DrawPointer(dc, center, radius);
+    }
+
+    private void UpdatePointerDynamics()
+    {
+        var now = DateTime.UtcNow;
+        if (!PointerFlexEnabled)
+        {
+            _smoothedAngularSpeed = 0;
+            _pointerFlexX = 0;
+            _pointerFlexVelocityX = 0;
+            _lastPointerRenderAt = now;
+            _lastRotationRadians = RotationRadians;
+            return;
+        }
+
+        if (_lastPointerRenderAt == DateTime.MinValue)
+        {
+            _lastPointerRenderAt = now;
+            _lastRotationRadians = RotationRadians;
+            return;
+        }
+
+        var dt = (now - _lastPointerRenderAt).TotalSeconds;
+        if (dt <= 0 || dt > 0.2)
+        {
+            _lastPointerRenderAt = now;
+            _lastRotationRadians = RotationRadians;
+            return;
+        }
+
+        var delta = RotationRadians - _lastRotationRadians;
+        delta = NormalizeSignedAngle(delta);
+        var rawSpeed = delta / dt;
+        _smoothedAngularSpeed = (_smoothedAngularSpeed * 0.8) + (rawSpeed * 0.2);
+        // Spring-damper to create a "snapped/flicked" recoil feel.
+        var targetFlex = Math.Sign(_smoothedAngularSpeed) * Math.Min(14, Math.Abs(_smoothedAngularSpeed) * 1.3);
+        var stiffness = 95.0;
+        var damping = 18.0;
+        var accel = (targetFlex - _pointerFlexX) * stiffness - (_pointerFlexVelocityX * damping);
+        _pointerFlexVelocityX += accel * dt;
+        _pointerFlexX += _pointerFlexVelocityX * dt;
+
+        _lastPointerRenderAt = now;
+        _lastRotationRadians = RotationRadians;
+    }
+
+    private void DrawPointer(DrawingContext dc, Point center, double radius)
+    {
+        var topY = center.Y - radius;
+        var stemLength = radius * 0.12;
+        // Position pointer so it straddles the wheel boundary: half outside, half inside.
+        var mountY = topY - (stemLength * 0.5);
+        var joint1Y = mountY + stemLength * 0.38;
+        var joint2Y = mountY + stemLength * 0.66;
+        var joint3Y = mountY + stemLength * 0.86;
+        var tipY = topY + (stemLength * 0.5);
+
+        var speed = _smoothedAngularSpeed;
+        var speedAbs = Math.Abs(speed);
+        var flexAmount = Math.Min(10, speedAbs * 0.8);
+        // Tip flex: spring recoil + small speed contribution.
+        var tipShiftX = _pointerFlexX + (Math.Sign(speed) * flexAmount * 0.35);
+        // Add slight vibration while spinning so the tip doesn't look rigid.
+        var flutter = Math.Sin(DateTime.UtcNow.Ticks / TimeSpan.TicksPerSecond * 22) * Math.Min(1.6, speedAbs * 0.18);
+        tipShiftX += flutter;
+
+        var mountHalf = 4.8;
+        var joint1Half = 3.1;
+        var joint2Half = 2.0;
+        var joint3Half = 1.0;
+        var bend1 = tipShiftX * 0.22;
+        var bend2 = tipShiftX * 0.48;
+        var bend3 = tipShiftX * 0.78;
+        var tip = new Point(center.X + tipShiftX, tipY);
 
         var pointer = new StreamGeometry();
         using (var ctx = pointer.Open())
         {
-            ctx.BeginFigure(new Point(center.X, center.Y - radius - 22), true, true);
-            ctx.LineTo(new Point(center.X - 12, center.Y - radius + 2), true, false);
-            ctx.LineTo(new Point(center.X + 12, center.Y - radius + 2), true, false);
+            ctx.BeginFigure(new Point(center.X - mountHalf, mountY), true, true);
+            ctx.LineTo(new Point(center.X + mountHalf, mountY), true, false);
+            ctx.LineTo(new Point(center.X + bend1 + joint1Half, joint1Y), true, false);
+            ctx.LineTo(new Point(center.X + bend2 + joint2Half, joint2Y), true, false);
+            ctx.LineTo(new Point(center.X + bend3 + joint3Half, joint3Y), true, false);
+            ctx.LineTo(tip, true, false);
+            ctx.LineTo(new Point(center.X + bend3 - joint3Half, joint3Y), true, false);
+            ctx.LineTo(new Point(center.X + bend2 - joint2Half, joint2Y), true, false);
+            ctx.LineTo(new Point(center.X + bend1 - joint1Half, joint1Y), true, false);
         }
 
         pointer.Freeze();
@@ -181,6 +278,22 @@ public sealed class RouletteWheelControl : FrameworkElement
         var tau = Math.PI * 2;
         var normalized = angle % tau;
         return normalized < 0 ? normalized + tau : normalized;
+    }
+
+    private static double NormalizeSignedAngle(double angle)
+    {
+        var tau = Math.PI * 2;
+        var normalized = angle % tau;
+        if (normalized > Math.PI)
+        {
+            normalized -= tau;
+        }
+        else if (normalized < -Math.PI)
+        {
+            normalized += tau;
+        }
+
+        return normalized;
     }
 
     private sealed record WheelSegment(string Name, double Start, double End, SolidColorBrush Brush);

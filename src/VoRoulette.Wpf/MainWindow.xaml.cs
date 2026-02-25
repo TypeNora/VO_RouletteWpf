@@ -68,11 +68,13 @@ public partial class MainWindow : Window
 
         CharacterGrid.ItemsSource = _characters;
         RefreshPresetComboBoxItems();
+        WheelControl.PointerFlexEnabled = false;
 
         _arcadeTimer.Tick += ArcadeTimer_Tick;
         _arcadeBlinkTimer.Tick += ArcadeBlinkTimer_Tick;
         LoadState();
         UpdatePresetSelectionGuard();
+        UpdateImagePathColumnVisibility();
 
         CompositionTarget.Rendering += OnRendering;
         Closing += OnClosing;
@@ -164,6 +166,7 @@ public partial class MainWindow : Window
 
         _startAt = DateTime.UtcNow;
         _lastFrameAt = _startAt;
+        WheelControl.PointerFlexEnabled = true;
 
         StartButton.IsEnabled = false;
         StopButton.IsEnabled = true;
@@ -193,6 +196,7 @@ public partial class MainWindow : Window
     {
         _running = false;
         _decelRequested = false;
+        WheelControl.PointerFlexEnabled = false;
         WheelControl.RotationRadians = NormalizeAngle(WheelControl.RotationRadians + (_random.NextDouble() - 0.5) * (Math.PI / 90));
 
         var winner = WheelControl.PickCurrentName();
@@ -216,6 +220,24 @@ public partial class MainWindow : Window
         }
 
         ApplyPreset(preset);
+    }
+
+    private void MainTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateImagePathColumnVisibility();
+    }
+
+    private void UpdateImagePathColumnVisibility()
+    {
+        if (ImagePathColumn is null || MainTabControl is null || RouletteTab is null)
+        {
+            return;
+        }
+
+        var rouletteSelected = ReferenceEquals(MainTabControl.SelectedItem, RouletteTab);
+        ImagePathColumn.Visibility = rouletteSelected
+            ? Visibility.Collapsed
+            : Visibility.Visible;
     }
 
     private void RefreshPresetComboBoxItems()
@@ -413,6 +435,11 @@ public partial class MainWindow : Window
         SaveState();
     }
 
+    private void ClearList_Click(object sender, RoutedEventArgs e)
+    {
+        ClearCharacterList();
+    }
+
     private void Add_Click(object sender, RoutedEventArgs e)
     {
         var name = (NewNameTextBox.Text ?? string.Empty).Trim();
@@ -428,6 +455,45 @@ public partial class MainWindow : Window
         NewNameTextBox.Text = string.Empty;
         NewWeightTextBox.Text = "1";
 
+        RebuildWheel();
+        SaveState();
+    }
+
+    private void SelectImagePath_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: CharacterItem item })
+        {
+            return;
+        }
+
+        var baseDir = AppContext.BaseDirectory;
+        var initialDirectory = baseDir;
+        var existing = (item.ImagePath ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(existing))
+        {
+            var resolved = ResolveCustomImagePath(existing);
+            var dir = Path.GetDirectoryName(resolved);
+            if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
+            {
+                initialDirectory = dir;
+            }
+        }
+
+        var dialog = new OpenFileDialog
+        {
+            Filter = "画像ファイル (*.png;*.gif;*.bmp;*.jpg;*.jpeg)|*.png;*.gif;*.bmp;*.jpg;*.jpeg|すべてのファイル (*.*)|*.*",
+            Multiselect = false,
+            InitialDirectory = initialDirectory,
+            Title = "画像ファイルを選択"
+        };
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        var selected = dialog.FileName;
+        var normalized = NormalizeStoredImagePath(selected, baseDir);
+        item.ImagePath = normalized;
         RebuildWheel();
         SaveState();
     }
@@ -481,7 +547,7 @@ public partial class MainWindow : Window
         _characters.Clear();
         foreach (var entry in _favorites[slot])
         {
-            _characters.Add(CreateCharacter(entry.Name, entry.Weight, entry.Enabled));
+            _characters.Add(CreateCharacter(entry.Name, entry.Weight, entry.Enabled, entry.ImagePath));
         }
 
         FavoriteStatusText.Text = $"お気に入り{slot + 1}を読み込みました。";
@@ -513,9 +579,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private CharacterItem CreateCharacter(string name, double weight, bool enabled)
+    private CharacterItem CreateCharacter(string name, double weight, bool enabled, string? imagePath = null)
     {
-        var item = new CharacterItem(name, weight, enabled);
+        var item = new CharacterItem(name, weight, enabled, imagePath);
         item.PropertyChanged += CharacterItem_PropertyChanged;
         return item;
     }
@@ -913,7 +979,7 @@ public partial class MainWindow : Window
 
     private Button CreateArcadeBannerButton(CharacterItem item)
     {
-        var source = ResolveBannerImage(item.Name);
+        var source = ResolveBannerImage(item);
         var (cellWidth, cellHeight) = GetCellSizeFromImage(source);
         var image = new Image
         {
@@ -1028,36 +1094,104 @@ public partial class MainWindow : Window
         }
     }
 
-    private ImageSource? ResolveBannerImage(string name)
+    private ImageSource? ResolveBannerImage(CharacterItem item)
     {
+        var customPath = (item.ImagePath ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(customPath))
+        {
+            var resolvedPath = ResolveCustomImagePath(customPath);
+            var customKey = $"CUSTOM|{resolvedPath}";
+            if (_bannerCache.TryGetValue(customKey, out var customCached))
+            {
+                if (customCached is not null)
+                {
+                    return customCached;
+                }
+            }
+            else
+            {
+                var customImage = LoadImageIfExists(resolvedPath);
+                _bannerCache[customKey] = customImage;
+                if (customImage is not null)
+                {
+                    return customImage;
+                }
+            }
+        }
+
         var presetDir = ResolvePresetDirectoryName();
         var mode = IsVootPreset() ? _vootGeneMode : "NONE";
-        var key = $"{presetDir}|{mode}|{NormalizeAssetKey(name)}";
+        var key = $"{presetDir}|{mode}|{NormalizeAssetKey(item.Name)}";
         if (_bannerCache.TryGetValue(key, out var cached))
         {
             return cached;
         }
 
         var baseDir = Path.Combine(AppContext.BaseDirectory, "assets", "arcade-banners", "source", presetDir);
-        foreach (var path in BuildBannerCandidatePaths(baseDir, name))
+        foreach (var path in BuildBannerCandidatePaths(baseDir, item.Name))
         {
-            if (!File.Exists(path))
+            var bitmap = LoadImageIfExists(path);
+            if (bitmap is null)
             {
                 continue;
             }
 
-            var bitmap = new BitmapImage();
-            bitmap.BeginInit();
-            bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.UriSource = new Uri(path);
-            bitmap.EndInit();
-            bitmap.Freeze();
             _bannerCache[key] = bitmap;
             return bitmap;
         }
 
         _bannerCache[key] = null;
         return null;
+    }
+
+    private static string ResolveCustomImagePath(string imagePath)
+    {
+        if (Path.IsPathRooted(imagePath))
+        {
+            return imagePath;
+        }
+
+        return Path.Combine(AppContext.BaseDirectory, imagePath);
+    }
+
+    private static string NormalizeStoredImagePath(string fullPath, string baseDir)
+    {
+        try
+        {
+            var relative = Path.GetRelativePath(baseDir, fullPath);
+            if (!relative.StartsWith("..", StringComparison.Ordinal) && !Path.IsPathRooted(relative))
+            {
+                return relative;
+            }
+        }
+        catch
+        {
+        }
+
+        return fullPath;
+    }
+
+    private static ImageSource? LoadImageIfExists(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.UriSource = new Uri(path, UriKind.Absolute);
+            bitmap.EndInit();
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string NormalizeAssetKey(string name)
@@ -1289,7 +1423,7 @@ public partial class MainWindow : Window
             _characters.Clear();
             foreach (var entry in loaded)
             {
-                _characters.Add(CreateCharacter(entry.Name, entry.Weight, entry.Enabled));
+                _characters.Add(CreateCharacter(entry.Name, entry.Weight, entry.Enabled, entry.ImagePath));
             }
 
             for (var i = 0; i < 3; i += 1)
@@ -1325,6 +1459,19 @@ public partial class MainWindow : Window
             Favorites = _favorites.Select(f => f.Count == 0 ? null : f.ToList()).ToList(),
             CustomPresets = _customPresets.ToDictionary(x => x.Key, x => x.Value.ToList(), StringComparer.Ordinal)
         };
+    }
+
+    private void ClearCharacterList()
+    {
+        foreach (var item in _characters)
+        {
+            item.PropertyChanged -= CharacterItem_PropertyChanged;
+        }
+
+        _characters.Clear();
+        RebuildWheel();
+        FavoriteStatusText.Text = "リストを全削除しました。";
+        SaveState();
     }
 
     private static Encoding CreateShiftJisEncoding()
