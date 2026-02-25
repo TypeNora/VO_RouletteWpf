@@ -4,11 +4,14 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using VoRoulette.Core;
 
 namespace VoRoulette.Wpf;
@@ -16,10 +19,13 @@ namespace VoRoulette.Wpf;
 public partial class MainWindow : Window
 {
     private const string AppDataName = "VO_roulette_wpf";
+    private const double ArcadeDefaultCellWidth = 243;
+    private const double ArcadeDefaultCellHeight = 71;
 
     private readonly ObservableCollection<CharacterItem> _characters = [];
     private readonly List<RouletteEntry>[] _favorites = [[], [], []];
     private readonly Random _random = new();
+    private readonly Dictionary<string, List<string>> _customPresets = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _arcadeTimer = new() { Interval = TimeSpan.FromMilliseconds(80) };
     private readonly DispatcherTimer _arcadeBlinkTimer = new() { Interval = TimeSpan.FromSeconds(0.25) };
     private readonly List<(Button Button, CharacterItem Item)> _arcadeButtons = [];
@@ -45,19 +51,23 @@ public partial class MainWindow : Window
     private string _arcadeFinalName = string.Empty;
     private bool _arcadeBlinkVisible = true;
     private DateTime _arcadeBlinkStartedAt;
-    private double _arcadeCellWidth = 243;
-    private double _arcadeCellHeight = 71;
+    private double _arcadeCellWidth = ArcadeDefaultCellWidth;
+    private double _arcadeCellHeight = ArcadeDefaultCellHeight;
     private string _selectedPreset = "オラタン";
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNameCaseInsensitive = true
+    };
+    private static readonly Encoding ShiftJisEncoding = CreateShiftJisEncoding();
+    private static readonly string[] BannerFileExtensions = [".png", ".gif", ".bmp", ".jpg", ".jpeg"];
 
     public MainWindow()
     {
         InitializeComponent();
 
         CharacterGrid.ItemsSource = _characters;
-        foreach (var key in Presets.All.Keys)
-        {
-            PresetComboBox.Items.Add(key);
-        }
+        RefreshPresetComboBoxItems();
 
         _arcadeTimer.Tick += ArcadeTimer_Tick;
         _arcadeBlinkTimer.Tick += ArcadeBlinkTimer_Tick;
@@ -208,6 +218,20 @@ public partial class MainWindow : Window
         ApplyPreset(preset);
     }
 
+    private void RefreshPresetComboBoxItems()
+    {
+        if (PresetComboBox is null)
+        {
+            return;
+        }
+
+        PresetComboBox.Items.Clear();
+        foreach (var key in Presets.All.Keys)
+        {
+            PresetComboBox.Items.Add(key);
+        }
+    }
+
     private void ApplyPreset(string preset)
     {
         if (!Presets.All.TryGetValue(preset, out var names))
@@ -226,6 +250,134 @@ public partial class MainWindow : Window
         UpdateArcadeModeControls();
         RebuildWheel();
         SaveState();
+    }
+
+    private void RegisterPreset_Click(object sender, RoutedEventArgs e)
+    {
+        if (_running || _arcadeRunning)
+        {
+            return;
+        }
+
+        var presetName = (NewPresetNameTextBox.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(presetName))
+        {
+            PresetStatusText.Text = "プリセット名を入力してください。";
+            return;
+        }
+
+        if (Presets.IsBuiltIn(presetName))
+        {
+            PresetStatusText.Text = "標準プリセット名は上書きできません。";
+            return;
+        }
+
+        var names = _characters
+            .Select(x => (x.Name ?? string.Empty).Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct()
+            .ToList();
+        if (names.Count == 0)
+        {
+            PresetStatusText.Text = "登録対象のキャラクターがありません。";
+            return;
+        }
+
+        if (!Presets.Register(presetName, names, overwrite: true))
+        {
+            PresetStatusText.Text = "プリセット登録に失敗しました。";
+            return;
+        }
+
+        _customPresets[presetName] = names;
+        _selectedPreset = presetName;
+        _restoringState = true;
+        try
+        {
+            RefreshPresetComboBoxItems();
+            PresetComboBox.SelectedItem = presetName;
+        }
+        finally
+        {
+            _restoringState = false;
+        }
+        PresetStatusText.Text = $"プリセット「{presetName}」を登録しました。";
+        SaveState();
+    }
+
+    private void SaveJson_Click(object sender, RoutedEventArgs e)
+    {
+        if (_running || _arcadeRunning)
+        {
+            return;
+        }
+
+        try
+        {
+            var baseDir = AppContext.BaseDirectory;
+            var dialog = new SaveFileDialog
+            {
+                Filter = "JSONファイル (*.json)|*.json|すべてのファイル (*.*)|*.*",
+                DefaultExt = ".json",
+                AddExtension = true,
+                FileName = "state.json",
+                InitialDirectory = baseDir,
+                Title = "JSON保存先を選択"
+            };
+            if (dialog.ShowDialog(this) != true)
+            {
+                return;
+            }
+
+            var json = JsonSerializer.Serialize(BuildCurrentState(), JsonOptions);
+            File.WriteAllText(dialog.FileName, json, ShiftJisEncoding);
+            PresetStatusText.Text = $"JSON保存しました: {dialog.FileName}";
+        }
+        catch
+        {
+            PresetStatusText.Text = "JSON保存に失敗しました。";
+        }
+    }
+
+    private void LoadJson_Click(object sender, RoutedEventArgs e)
+    {
+        if (_running || _arcadeRunning)
+        {
+            return;
+        }
+
+        try
+        {
+            var baseDir = AppContext.BaseDirectory;
+            var dialog = new OpenFileDialog
+            {
+                Filter = "JSONファイル (*.json)|*.json|すべてのファイル (*.*)|*.*",
+                Multiselect = false,
+                FileName = "state.json",
+                InitialDirectory = baseDir,
+                Title = "JSON読込元を選択"
+            };
+            if (dialog.ShowDialog(this) != true)
+            {
+                return;
+            }
+
+            var json = File.ReadAllText(dialog.FileName, ShiftJisEncoding);
+            var state = JsonSerializer.Deserialize<RouletteState>(json, JsonOptions);
+            if (state is null)
+            {
+                PresetStatusText.Text = "JSON読込に失敗しました。";
+                return;
+            }
+
+            ApplyState(state);
+            SaveState();
+            PresetStatusText.Text = $"JSON読込しました: {dialog.FileName}";
+        }
+        catch
+        {
+            PresetStatusText.Text = "JSON読込に失敗しました。";
+        }
     }
 
     private void AllOn_Click(object sender, RoutedEventArgs e)
@@ -525,7 +677,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        PresetComboBox.IsEnabled = !(_running || _arcadeRunning);
+        var locked = _running || _arcadeRunning;
+        PresetComboBox.IsEnabled = !locked;
+        if (NewPresetNameTextBox is not null)
+        {
+            NewPresetNameTextBox.IsEnabled = !locked;
+        }
+        if (LoadJsonButton is not null)
+        {
+            LoadJsonButton.IsEnabled = !locked;
+        }
+        if (SaveJsonButton is not null)
+        {
+            SaveJsonButton.IsEnabled = !locked;
+        }
     }
 
     private void ArcadeBlinkTimer_Tick(object? sender, EventArgs e)
@@ -752,7 +917,7 @@ public partial class MainWindow : Window
         var (cellWidth, cellHeight) = GetCellSizeFromImage(source);
         var image = new Image
         {
-            Stretch = Stretch.UniformToFill,
+            Stretch = Stretch.Uniform,
             Source = source,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
@@ -821,12 +986,14 @@ public partial class MainWindow : Window
             var height = bitmap.PixelHeight * 96.0 / dpiY;
             if (width > 0 && height > 0)
             {
-                _arcadeCellWidth = width;
-                _arcadeCellHeight = height;
-                return (width, height);
+                _arcadeCellWidth = Math.Min(width, ArcadeDefaultCellWidth);
+                _arcadeCellHeight = Math.Min(height, ArcadeDefaultCellHeight);
+                return (_arcadeCellWidth, _arcadeCellHeight);
             }
         }
 
+        _arcadeCellWidth = ArcadeDefaultCellWidth;
+        _arcadeCellHeight = ArcadeDefaultCellHeight;
         return (_arcadeCellWidth, _arcadeCellHeight);
     }
 
@@ -942,15 +1109,21 @@ public partial class MainWindow : Window
         {
             foreach (var stem in candidates)
             {
-                yield return Path.Combine(baseDir, $"{_vootGeneMode}_{stem}.png");
-                yield return Path.Combine(baseDir, $"_{_vootGeneMode}_{stem}.png");
-                yield return Path.Combine(baseDir, $"_{_vootGeneMode}{stem}.png");
+                foreach (var ext in BannerFileExtensions)
+                {
+                    yield return Path.Combine(baseDir, $"{_vootGeneMode}_{stem}{ext}");
+                    yield return Path.Combine(baseDir, $"_{_vootGeneMode}_{stem}{ext}");
+                    yield return Path.Combine(baseDir, $"_{_vootGeneMode}{stem}{ext}");
+                }
             }
         }
 
         foreach (var stem in candidates)
         {
-            yield return Path.Combine(baseDir, $"{stem}.png");
+            foreach (var ext in BannerFileExtensions)
+            {
+                yield return Path.Combine(baseDir, $"{stem}{ext}");
+            }
         }
     }
 
@@ -1062,13 +1235,50 @@ public partial class MainWindow : Window
 
     private void LoadState()
     {
+        try
+        {
+            ApplyState(RouletteStateStore.Load(AppDataName));
+        }
+        catch
+        {
+            ApplyState(new RouletteState());
+        }
+    }
+
+    private void ApplyState(RouletteState state)
+    {
         _restoringState = true;
         try
         {
-            var state = RouletteStateStore.Load(AppDataName);
+            Presets.ResetToBuiltIn();
+            _customPresets.Clear();
+            foreach (var (name, list) in state.CustomPresets ?? new Dictionary<string, List<string>>())
+            {
+                if (Presets.IsBuiltIn(name))
+                {
+                    continue;
+                }
 
+                var cleaned = (list ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
+                if (cleaned.Count == 0)
+                {
+                    continue;
+                }
+
+                if (Presets.Register(name, cleaned))
+                {
+                    _customPresets[name] = cleaned;
+                }
+            }
+
+            RefreshPresetComboBoxItems();
             _selectedPreset = string.IsNullOrWhiteSpace(state.SelectedPreset) ? "オラタン" : state.SelectedPreset;
-            PresetComboBox.SelectedItem = Presets.All.ContainsKey(_selectedPreset) ? _selectedPreset : "オラタン";
+            if (!Presets.All.ContainsKey(_selectedPreset))
+            {
+                _selectedPreset = "オラタン";
+            }
+
+            PresetComboBox.SelectedItem = _selectedPreset;
 
             var loaded = RouletteEngine.Normalize(state.Entries).ToList();
             if (loaded.Count == 0)
@@ -1085,7 +1295,8 @@ public partial class MainWindow : Window
             for (var i = 0; i < 3; i += 1)
             {
                 _favorites[i].Clear();
-                var src = i < state.Favorites.Count ? state.Favorites[i] : null;
+                var favorites = state.Favorites ?? new List<List<RouletteEntry>?> { null, null, null };
+                var src = i < favorites.Count ? favorites[i] : null;
                 if (src is null)
                 {
                     continue;
@@ -1095,6 +1306,7 @@ public partial class MainWindow : Window
             }
 
             FavoriteStatusText.Text = string.Empty;
+            PresetStatusText.Text = string.Empty;
             RefreshFavoriteButtons();
             RebuildWheel();
         }
@@ -1104,15 +1316,25 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SaveState()
+    private RouletteState BuildCurrentState()
     {
-        var state = new RouletteState
+        return new RouletteState
         {
             Entries = GetEntries().ToList(),
             SelectedPreset = _selectedPreset,
             Favorites = _favorites.Select(f => f.Count == 0 ? null : f.ToList()).ToList(),
+            CustomPresets = _customPresets.ToDictionary(x => x.Key, x => x.Value.ToList(), StringComparer.Ordinal)
         };
+    }
 
-        RouletteStateStore.Save(AppDataName, state);
+    private static Encoding CreateShiftJisEncoding()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        return Encoding.GetEncoding(932);
+    }
+
+    private void SaveState()
+    {
+        RouletteStateStore.Save(AppDataName, BuildCurrentState());
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 
 namespace VoRoulette.Core;
@@ -11,6 +12,7 @@ public static class RouletteStateStore
         WriteIndented = true,
         PropertyNameCaseInsensitive = true,
     };
+    private static readonly Encoding ShiftJisEncoding = CreateShiftJisEncoding();
 
     public static RouletteState Load(string appName)
     {
@@ -22,7 +24,7 @@ public static class RouletteStateStore
 
         try
         {
-            var json = File.ReadAllText(path);
+            var json = File.ReadAllText(path, ShiftJisEncoding);
             return JsonSerializer.Deserialize<RouletteState>(json, JsonOptions) ?? new RouletteState();
         }
         catch
@@ -41,12 +43,17 @@ public static class RouletteStateStore
         }
 
         var json = JsonSerializer.Serialize(state, JsonOptions);
-        File.WriteAllText(path, json);
+        File.WriteAllText(path, json, ShiftJisEncoding);
     }
 
-    private static string GetPath(string appName)
+    private static string GetPath(string _appName)
     {
-        var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(baseDir, appName, "state.json");
+        return Path.Combine(AppContext.BaseDirectory, "state.json");
+    }
+
+    private static Encoding CreateShiftJisEncoding()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        return Encoding.GetEncoding(932);
     }
 }
